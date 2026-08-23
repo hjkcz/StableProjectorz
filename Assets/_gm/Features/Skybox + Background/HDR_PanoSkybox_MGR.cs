@@ -308,6 +308,12 @@ namespace spz {
 
 	            inpainting_fill = (int)InpaintingFill.LatentNoise,
 	        };
+
+	        // Flux and friends want their guidance in a different field, and cfg_scale
+	        // left at 1. Every other model keeps the slider value in cfg_scale:
+	        SD_DistilledGuidance.Apply( SD_InputPanel_UI.instance.CFG_scale_slider.value,
+	                                    ref payload.cfg_scale,  ref payload.distilled_cfg_scale );
+
 	        var ctrlList = SD_ControlNetsList_UI.instance;
 	        ControlNet_NetworkArgs ctrlNets_args = new ControlNet_NetworkArgs();
 	        ctrlNets_args.args = new ControlNetUnit_NetworkArgs[1];

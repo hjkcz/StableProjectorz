@@ -1,4 +1,3 @@
-using NUnit.Framework;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -50,7 +49,12 @@ namespace spz {
 
 	            alwayson_scripts = new Dictionary<string,AlwaysOn_Value>(),
 	        };
-       
+
+	        // Flux and friends want their guidance in a different field, and cfg_scale
+	        // left at 1. Every other model keeps the slider value in cfg_scale:
+	        SD_DistilledGuidance.Apply( input.CFG_scale_slider.value,
+	                                    ref payload_.cfg_scale,  ref payload_.distilled_cfg_scale );
+
 	        ControlNet_NetworkArgs ctrlNets_args = SD_ControlNetsList_UI.instance.GetArgs_forGenerationRequest(intermediates_);
 	        if (ctrlNets_args.args.Length > 0) {
 	            payload_.alwayson_scripts.Add("controlnet", ctrlNets_args);//https://github.com/Mikubill/sd-webui-controlnet/wiki/API#examples-1
@@ -127,6 +131,11 @@ namespace spz {
 
 	            inpainting_fill = (int)inpaint_fill,
 	        };
+
+	        // Flux and friends want their guidance in a different field, and cfg_scale
+	        // left at 1. Every other model keeps the slider value in cfg_scale:
+	        SD_DistilledGuidance.Apply( input.CFG_scale_slider.value,
+	                                    ref payload_.cfg_scale,  ref payload_.distilled_cfg_scale );
 
 	        // Avoid softInpaint if rendering 'EntireShape' (when we have background active).
 	        // We will use LatentNothing, and soft inpaint doesn't work with it.

@@ -49,6 +49,13 @@ namespace spz {
 	    public int n_iter;
 	    public int steps;
 	    public float cfg_scale;
+
+	    // Guidance-distilled checkpoints (Flux) read their guidance from here instead
+	    // of cfg_scale - see SD_DistilledGuidance. Null for every other model, and a
+	    // null is left out of the JSON, so those requests stay exactly as they were.
+	    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+	    public float? distilled_cfg_scale;
+
 	    public int apparentFinalWidth() => width;
 	    public int width;
 	    public int apparentFinalHeight() => height;
@@ -89,6 +96,13 @@ namespace spz {
 	    public int n_iter;
 	    public int steps;
 	    public float cfg_scale;
+
+	    // Guidance-distilled checkpoints (Flux) read their guidance from here instead
+	    // of cfg_scale - see SD_DistilledGuidance. Null for every other model, and a
+	    // null is left out of the JSON, so those requests stay exactly as they were.
+	    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+	    public float? distilled_cfg_scale;
+
 	    public int apparentFinalWidth() => width;
 	    public int width;
 	    public int apparentFinalHeight() => height;
