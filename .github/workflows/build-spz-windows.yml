@@ -72,20 +72,20 @@ jobs:
           New-Item -ItemType Directory -Path "$env:APPDATA\Unity" -Force | Out-Null
 
           Write-Host "=== Requesting activation file ==="
-          Write-Host "CWD: $env:GITHUB_WORKSPACE"
+          $alfDir = Join-Path $env:RUNNER_TEMP "alf_gen"
 
           # Per Unity 6000 docs: ALF is written to CWD.
           # Use -WorkingDirectory to control where ALF lands.
           # Docs do not use -nographics.
           $proc = Start-Process -FilePath $unityExe `
             -ArgumentList '-batchmode', '-createManualActivationFile', '-logFile', $logFile, '-quit' `
-            -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -WorkingDirectory $alfDir `
             -Wait -NoNewWindow -PassThru
           $exitCode = $proc.ExitCode
           Write-Host "Unity exit code: $exitCode"
 
           Write-Host "=== *.alf in GITHUB_WORKSPACE ==="
-          Get-ChildItem $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue
+          Get-ChildItem $alfDir -Filter "*.alf" -ErrorAction SilentlyContinue
           Write-Host "=== Activation log (last 50 lines) ==="
           Get-Content $logFile -Tail 50 -ErrorAction SilentlyContinue
 
@@ -111,7 +111,7 @@ jobs:
 
           if ($alfFile) {
             Write-Host "ALF file found: $($alfFile.FullName)"
-            Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force
+            Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force -Force
           } else {
             Write-Host "ERROR: No ALF file generated."
             Get-Content $logFile -ErrorAction SilentlyContinue
@@ -560,3 +560,5 @@ jobs:
           Write-Host "========================================="
           Write-Host " Job Status: ${{ job.status }}"
           Write-Host "========================================="
+
+
