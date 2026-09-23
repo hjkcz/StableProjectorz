@@ -1,4 +1,4 @@
-name: Build SPZ Windows
+﻿name: Build SPZ Windows
 
 # =====================================================================
 # Triggers:
@@ -66,67 +66,55 @@ jobs:
           $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
           $logFile = "$env:RUNNER_TEMP\activation_log.txt"
 
-          # Pre-create Unity cache directories to avoid CreateDirectory failures
-          $cacheDirs = @(
-            "$env:LOCALAPPDATA\Unity\Caches",
-            "$env:LOCALAPPDATA\Unity\Unity",
-            "$env:APPDATA\Unity"
-          )
-          foreach ($d in $cacheDirs) {
-            New-Item -ItemType Directory -Path $d -Force | Out-Null
-          }
+          # Pre-create Unity cache directories
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Caches" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Unity" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:APPDATA\Unity" -Force | Out-Null
 
           Write-Host "=== Requesting activation file ==="
-          # Use Start-Process -PassThru to capture exit code reliably for GUI apps on Windows
+          Write-Host "CWD: $env:GITHUB_WORKSPACE"
+
+          # Per Unity 6000 docs: ALF is written to CWD.
+          # Use -WorkingDirectory to control where ALF lands.
+          # Docs do not use -nographics.
           $proc = Start-Process -FilePath $unityExe `
-            -ArgumentList '-batchmode', '-nographics', "-logFile", $logFile, '-createManualActivationFile', '-quit' `
+            -ArgumentList '-batchmode', '-createManualActivationFile', '-logFile', $logFile, '-quit' `
+            -WorkingDirectory $env:GITHUB_WORKSPACE `
             -Wait -NoNewWindow -PassThru
           $exitCode = $proc.ExitCode
           Write-Host "Unity exit code: $exitCode"
+
+          Write-Host "=== *.alf in GITHUB_WORKSPACE ==="
+          Get-ChildItem $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue
           Write-Host "=== Activation log (last 50 lines) ==="
           Get-Content $logFile -Tail 50 -ErrorAction SilentlyContinue
 
-          # Search for ALF file everywhere — Unity may put it in unexpected locations
-          $alfFile = $null
-          $searchPaths = @(
-            $env:GITHUB_WORKSPACE,
-            "$env:LOCALAPPDATA\Unity",
-            "$env:APPDATA\Unity",
-            "$env:USERPROFILE",
-            "C:\ProgramData\Unity",
-            "C:\Program Files\Unity\Hub\Editor\6000.2.6f2",
-            $env:RUNNER_TEMP
-          )
-          Write-Host "=== Searching for ALF file ==="
-          foreach ($p in $searchPaths) {
-            Write-Host "  Checking: $p (exists: $(Test-Path $p 2>`$null))"
-            if (Test-Path $p) {
-              $alfFile = Get-ChildItem -Path $p -Filter "*.alf" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($alfFile) {
-                Write-Host "  FOUND: $($alfFile.FullName)"
-                break
+          # ALF should be in GITHUB_WORKSPACE (CWD we set)
+          $alfFile = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          if (-not $alfFile) {
+            Write-Host "ALF not in CWD, searching fallback locations..."
+            $searchPaths = @(
+              "$env:LOCALAPPDATA\Unity",
+              "$env:APPDATA\Unity",
+              $env:USERPROFILE,
+              "C:\ProgramData\Unity",
+              $env:RUNNER_TEMP
+            )
+            foreach ($p in $searchPaths) {
+              if (Test-Path $p) {
+                $alfFile = Get-ChildItem -Path $p -Filter "*.alf" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($alfFile) { break }
               }
             }
           }
-          # Also try a broad search on C:\ for .alf files (depth-limited)
-          if (-not $alfFile) {
-            Write-Host "  Broad search on C:\Users and C:\ProgramData..."
-            $alfFile = Get-ChildItem -Path "C:\Users" -Filter "*.alf" -Recurse -Depth 5 -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $alfFile) {
-              $alfFile = Get-ChildItem -Path "C:\ProgramData" -Filter "*.alf" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
-            }
-          }
+
           if ($alfFile) {
             Write-Host "ALF file found: $($alfFile.FullName)"
             Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force
           } else {
-            Write-Host "ERROR: No ALF file generated. Dumping full log for debugging."
-            Write-Host "=== Full activation log ==="
+            Write-Host "ERROR: No ALF file generated."
             Get-Content $logFile -ErrorAction SilentlyContinue
-            Write-Host "=== Dir listing of GITHUB_WORKSPACE ==="
-            Get-ChildItem $env:GITHUB_WORKSPACE -Filter "*.alf" -Recurse -ErrorAction SilentlyContinue
-            Write-Host "=== Dir listing of LOCALAPPDATA\Unity ==="
-            Get-ChildItem "$env:LOCALAPPDATA\Unity" -Recurse -ErrorAction SilentlyContinue
             exit 1
           }
 
