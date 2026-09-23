@@ -1,0 +1,26 @@
+# SPZ Proxy Configuration Example
+# Copy to config.yaml and modify as needed
+
+mode: mock  # mock | live
+
+server:
+  host: 127.0.0.1
+  port: 7860
+
+# Live mode only - set via env var OPENAI_API_KEY instead of here
+# openai_api_key: sk-...
+
+openai:
+  base_url: https://api.openai.com/v1
+  default_model: gpt-image-2.5-sunburst
+  # Available models:
+  #   gpt-image-2.5-sunburst  (default, mask editing)
+  #   gpt-image-2.5-flare     (reference image)
+
+# Parameters NOT supported by GPT Image API (accepted but ignored):
+#   sampler, cfg_scale, steps, scheduler
+# SPZ UI should disable or mark these as "not supported"
+
+limits:
+  max_concurrent_requests: 1
+  request_timeout_seconds: 120
