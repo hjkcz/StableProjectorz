@@ -1,4 +1,4 @@
-﻿name: Build SPZ Windows
+name: Build SPZ Windows
 
 # =====================================================================
 # Triggers:
@@ -35,7 +35,7 @@ jobs:
     name: Request Unity Activation File
     if: github.event.inputs.build_type == 'activate'
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -65,26 +65,39 @@ jobs:
         run: |
           $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
           $logFile = "$env:RUNNER_TEMP\activation_log.txt"
+
+          # Pre-create Unity cache directories to avoid CreateDirectory failures
+          $cacheDirs = @(
+            "$env:LOCALAPPDATA\Unity\Caches",
+            "$env:LOCALAPPDATA\Unity\Unity",
+            "$env:APPDATA\Unity"
+          )
+          foreach ($d in $cacheDirs) {
+            New-Item -ItemType Directory -Path $d -Force | Out-Null
+          }
+
           Write-Host "=== Requesting activation file ==="
-          # Do NOT use Tee-Object with the same log file as Unity -logFile
-          # That causes a file lock conflict. Let Unity write the log directly.
-          & $unityExe -batchmode -nographics -logFile $logFile -createManualActivationFile -quit
-          $exitCode = $LASTEXITCODE
+          # Use Start-Process -PassThru to capture exit code reliably for GUI apps on Windows
+          $proc = Start-Process -FilePath $unityExe `
+            -ArgumentList '-batchmode', '-nographics', "-logFile", $logFile, '-createManualActivationFile', '-quit' `
+            -Wait -NoNewWindow -PassThru
+          $exitCode = $proc.ExitCode
           Write-Host "Unity exit code: $exitCode"
-          Write-Host "=== Activation log (last 30 lines) ==="
-          Get-Content $logFile -Tail 30 -ErrorAction SilentlyContinue
+          Write-Host "=== Activation log (last 50 lines) ==="
+          Get-Content $logFile -Tail 50 -ErrorAction SilentlyContinue
 
           # Search for ALF file in multiple locations
           $alfFile = $null
           $searchPaths = @(
             $env:GITHUB_WORKSPACE,
-            $env:USERPROFILE,
             "$env:LOCALAPPDATA\Unity\Unity",
+            "$env:APPDATA\Unity",
+            $env:USERPROFILE,
             "C:\ProgramData\Unity"
           )
           foreach ($p in $searchPaths) {
             if (Test-Path $p) {
-              $alfFile = Get-ChildItem -Path $p -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
+              $alfFile = Get-ChildItem -Path $p -Filter "*.alf" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($alfFile) { break }
             }
           }
@@ -93,6 +106,8 @@ jobs:
             Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force
           } else {
             Write-Host "ERROR: No ALF file generated. Check activation log."
+            Write-Host "=== Full activation log ==="
+            Get-Content $logFile -ErrorAction SilentlyContinue
             exit 1
           }
 
@@ -218,8 +233,10 @@ jobs:
           # Verify license is valid by launching Unity in batchmode
           $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
           $verifyLog = "$env:RUNNER_TEMP\license_verify.log"
-          & $unityExe -batchmode -nographics -logFile $verifyLog -quit
-          $licExit = $LASTEXITCODE
+          # Pre-create cache dirs
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Caches" -Force | Out-Null
+          $p = Start-Process -FilePath $unityExe -ArgumentList '-batchmode', '-nographics', "-logFile", $verifyLog, '-quit' -Wait -NoNewWindow -PassThru
+          $licExit = $p.ExitCode
           Write-Host "License verify exit code: $licExit"
           Get-Content $verifyLog -Tail 20 -ErrorAction SilentlyContinue
           # Unity returns 0 if license OK; non-zero means license problem
@@ -234,10 +251,16 @@ jobs:
           $logFile = "$env:RUNNER_TEMP\unity_build.log"
           $projectPath = "$env:GITHUB_WORKSPACE"
 
-          Write-Host "=== Starting baseline build ==="
-          & $unityExe -batchmode -nographics -logFile $logFile -projectPath $projectPath -executeMethod SPZCloudBuild.BuildBaseline -quit 2>&1
+          # Pre-create cache dirs
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Caches" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Unity" -Force | Out-Null
 
-          $exitCode = $LASTEXITCODE
+          Write-Host "=== Starting baseline build ==="
+          $proc = Start-Process -FilePath $unityExe `
+            -ArgumentList '-batchmode', '-nographics', "-logFile", $logFile, "-projectPath", $projectPath, '-executeMethod', 'SPZCloudBuild.BuildBaseline', '-quit' `
+            -Wait -NoNewWindow -PassThru
+          $exitCode = $proc.ExitCode
+
           Write-Host "Unity exit code: $exitCode"
           Write-Host "=== Last 100 lines of build log ==="
           Get-Content $logFile -Tail 100 -ErrorAction SilentlyContinue
@@ -417,8 +440,10 @@ jobs:
 
           $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
           $verifyLog = "$env:RUNNER_TEMP\license_verify.log"
-          & $unityExe -batchmode -nographics -logFile $verifyLog -quit
-          $licExit = $LASTEXITCODE
+          # Pre-create cache dirs
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Caches" -Force | Out-Null
+          $p = Start-Process -FilePath $unityExe -ArgumentList '-batchmode', '-nographics', "-logFile", $verifyLog, '-quit' -Wait -NoNewWindow -PassThru
+          $licExit = $p.ExitCode
           Write-Host "License verify exit code: $licExit"
           Get-Content $verifyLog -Tail 20 -ErrorAction SilentlyContinue
           if ($licExit -ne 0) {
@@ -450,10 +475,16 @@ jobs:
           $logFile = "$env:RUNNER_TEMP\unity_build.log"
           $projectPath = "$env:GITHUB_WORKSPACE"
 
-          Write-Host "=== Starting CN build ==="
-          & $unityExe -batchmode -nographics -logFile $logFile -projectPath $projectPath -executeMethod SPZCloudBuild.BuildCN -quit 2>&1
+          # Pre-create cache dirs
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Caches" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\Unity\Unity" -Force | Out-Null
 
-          $exitCode = $LASTEXITCODE
+          Write-Host "=== Starting CN build ==="
+          $proc = Start-Process -FilePath $unityExe `
+            -ArgumentList '-batchmode', '-nographics', "-logFile", $logFile, "-projectPath", $projectPath, '-executeMethod', 'SPZCloudBuild.BuildCN', '-quit' `
+            -Wait -NoNewWindow -PassThru
+          $exitCode = $proc.ExitCode
+
           Write-Host "Unity exit code: $exitCode"
           Write-Host "=== Last 100 lines of build log ==="
           Get-Content $logFile -Tail 100 -ErrorAction SilentlyContinue
