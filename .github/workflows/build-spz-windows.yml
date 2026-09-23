@@ -54,21 +54,32 @@ jobs:
       - name: Generate Activation File (ALF)
         run: |
           $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
-          $alfPath = "$env:GITHUB_WORKSPACE\unity_v3.alf"
           Write-Host "=== Requesting activation file ==="
-          & $unityExe -batchmode -nographics -logFile - -createManualActivationFile -projectPath "$env:GITHUB_WORKSPACE" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\activation_log.txt"
-          # The ALF file is created in the working directory
-          $alfFile = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $alfFile) {
-            # Check common locations
-            $alfFile = Get-ChildItem -Path $env:USERPROFILE -Filter "*.alf" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          # Do NOT pass -projectPath: it triggers script compilation which can fail
+          # and block the activation file from being generated.
+          & $unityExe -batchmode -nographics -logFile "$env:RUNNER_TEMP\activation_log.txt" -createManualActivationFile 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\activation_log.txt"
+          $exitCode = $LASTEXITCODE
+          Write-Host "Unity exit code: $exitCode"
+          # Search for ALF file in multiple locations
+          $alfFile = $null
+          $searchPaths = @(
+            $env:GITHUB_WORKSPACE,
+            $env:USERPROFILE,
+            "$env:LOCALAPPDATA\Unity\Unity",
+            "C:\ProgramData\Unity"
+          )
+          foreach ($p in $searchPaths) {
+            if (Test-Path $p) {
+              $alfFile = Get-ChildItem -Path $p -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($alfFile) { break }
+            }
           }
           if ($alfFile) {
             Write-Host "ALF file found: $($alfFile.FullName)"
             Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force
           } else {
             Write-Host "ERROR: No ALF file generated. Check activation log."
-            Get-Content "$env:RUNNER_TEMP\activation_log.txt" -ErrorAction SilentlyContinue
+            Get-Content "$env:RUNNER_TEMP\activation_log.txt" -Tail 50 -ErrorAction SilentlyContinue
             exit 1
           }
 

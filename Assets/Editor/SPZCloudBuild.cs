@@ -314,8 +314,8 @@ public class SPZCloudBuild
             throw new Exception("TMP Settings.asset not found");
         }
 
-        // Use the correct API: TMP_Settings.fallbackFontAssets (List<TMP_FontAsset>)
-        var fallbackList = tmpSettings.fallbackFontAssets;
+        // Use the correct API: TMP_Settings.fallbackFontAssets is static in Unity 6000.x
+        var fallbackList = TMP_Settings.fallbackFontAssets;
         if (fallbackList == null)
         {
             // Should not happen, but handle gracefully
@@ -356,14 +356,14 @@ public class SPZCloudBuild
 
         // ── Verify: reload and check ───────────────────────────────
         var reloadedSettings = AssetDatabase.LoadAssetAtPath<TMP_Settings>(TMP_SETTINGS_PATH);
-        int fallbackCount = reloadedSettings.fallbackFontAssets != null
-            ? reloadedSettings.fallbackFontAssets.Count
+        int fallbackCount = TMP_Settings.fallbackFontAssets != null
+            ? TMP_Settings.fallbackFontAssets.Count
             : 0;
         bool hasCJK = false;
         for (int i = 0; i < fallbackCount; i++)
         {
-            if (reloadedSettings.fallbackFontAssets[i] != null &&
-                reloadedSettings.fallbackFontAssets[i].name == "CJKFallback SDF")
+            if (TMP_Settings.fallbackFontAssets[i] != null &&
+                TMP_Settings.fallbackFontAssets[i].name == "CJKFallback SDF")
             {
                 hasCJK = true;
                 break;
