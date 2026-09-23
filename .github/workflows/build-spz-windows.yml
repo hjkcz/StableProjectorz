@@ -1,0 +1,426 @@
+name: Build SPZ Windows
+
+# =====================================================================
+# Triggers:
+#   workflow_dispatch with build_type input:
+#     - "activate"  : one-time, generates ALF → convert to ULF → set secret
+#     - "baseline"  : original project, no CN, no Bridge (verify toolchain)
+#     - "cn"        : CN localization + CJK font + Agent Bridge
+#   push tag v*: runs baseline build
+# =====================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'activate | baseline | cn'
+        required: true
+        default: 'baseline'
+  push:
+    tags:
+      - 'v*'
+
+env:
+  UNITY_VERSION: '6000.2.6f2'
+  UNITY_CHANGESET: '4a4dcaec6541'
+  BUILD_NAME_BASELINE: 'StableProjectorz-Baseline'
+  BUILD_NAME_CN: 'StableProjectorz-CN'
+  CJK_FONT_URL: 'https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/SourceHanSansCN.zip'
+  CJK_FONT_SHA256: 'C0AA89A70F92A820FF95490FEA6D472CD19621A71C9A748A4950EB2EAFE6438E'
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════
+  # Job 1: One-time license activation (generates ALF file)
+  # Run this ONCE. Convert the ALF to ULF via Unity's manual activation
+  # page, then store the ULF content in the UNITY_LICENSE secret.
+  # ═════════════════════════════════════════════════════════════════
+  activate:
+    name: Request Unity Activation File
+    if: github.event.inputs.build_type == 'activate'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Unity Editor (minimal)
+        run: |
+          Write-Host "=== Downloading Unity $env:UNITY_VERSION ==="
+          $installerUrl = "https://download.unity3d.com/download_unity/$env:UNITY_CHANGESET/Windows64EditorInstaller/UnitySetup64-$env:UNITY_VERSION.exe"
+          $installerPath = "$env:RUNNER_TEMP\UnitySetup.exe"
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "=== Installing Unity (silent) ==="
+          Start-Process -FilePath $installerPath -ArgumentList '/S', '/D=C:\Program Files\Unity\Hub\Editor\6000.2.6f2' -Wait -NoNewWindow
+          Write-Host "=== Unity installed ==="
+
+      - name: Generate Activation File (ALF)
+        run: |
+          $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
+          $alfPath = "$env:GITHUB_WORKSPACE\unity_v3.alf"
+          Write-Host "=== Requesting activation file ==="
+          & $unityExe -batchmode -nographics -logFile - -createManualActivationFile -projectPath "$env:GITHUB_WORKSPACE" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\activation_log.txt"
+          # The ALF file is created in the working directory
+          $alfFile = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $alfFile) {
+            # Check common locations
+            $alfFile = Get-ChildItem -Path $env:USERPROFILE -Filter "*.alf" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($alfFile) {
+            Write-Host "ALF file found: $($alfFile.FullName)"
+            Copy-Item $alfFile.FullName -Destination "$env:GITHUB_WORKSPACE\activation.alf" -Force
+          } else {
+            Write-Host "ERROR: No ALF file generated. Check activation log."
+            Get-Content "$env:RUNNER_TEMP\activation_log.txt" -ErrorAction SilentlyContinue
+            exit 1
+          }
+
+      - name: Upload ALF file
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-activation-file
+          path: activation.alf
+          retention-days: 7
+
+      - name: Instructions
+        run: |
+          Write-Host "========================================"
+          Write-Host " ALF file generated successfully!"
+          Write-Host "========================================"
+          Write-Host "Next steps:"
+          Write-Host "1. Download the 'unity-activation-file' artifact"
+          Write-Host "2. Go to https://license.unity3d.com/manual"
+          Write-Host "3. Upload the .alf file"
+          Write-Host "4. Download the resulting .ulf file"
+          Write-Host "5. In GitHub: Settings > Secrets > Actions"
+          Write-Host "   - Create UNITY_LICENSE = contents of .ulf"
+          Write-Host "   - Create UNITY_EMAIL = your Unity account email"
+          Write-Host "   - Create UNITY_PASSWORD = your Unity account password"
+          Write-Host "6. Re-run this workflow with build_type=baseline"
+          Write-Host "========================================"
+
+  # ═════════════════════════════════════════════════════════════════
+  # Job 2: Baseline build (no CN, no Bridge — verify toolchain)
+  # ═════════════════════════════════════════════════════════════════
+  build-baseline:
+    name: Baseline Build (Windows x64 IL2CPP)
+    if: github.event.inputs.build_type == 'baseline' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Check License Secret
+        id: check_license
+        shell: pwsh
+        run: |
+          if (-not $env:UNITY_LICENSE) {
+            Write-Host "ERROR: UNITY_LICENSE secret is not set."
+            Write-Host "Run this workflow with build_type=activate first."
+            Write-Host "See: https://game.ci/docs/github/activation"
+            exit 1
+          }
+          Write-Host "UNITY_LICENSE secret is present."
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Install Unity Editor + IL2CPP Module
+        run: |
+          Write-Host "=== Downloading Unity $env:UNITY_VERSION ==="
+          $base = "https://download.unity3d.com/download_unity/$env:UNITY_CHANGESET"
+          $editorInstaller = "$base/Windows64EditorInstaller/UnitySetup64-$env:UNITY_VERSION.exe"
+          $il2cppInstaller = "$base/TargetSupportInstaller/UnitySetup-Windows-IL2CPP-Support-for-Editor-$env:UNITY_VERSION.exe"
+
+          $tmp = "$env:RUNNER_TEMP\unity_installers"
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+          Write-Host "--- Editor ---"
+          Invoke-WebRequest -Uri $editorInstaller -OutFile "$tmp\editor.exe" -UseBasicParsing
+          Start-Process -FilePath "$tmp\editor.exe" -ArgumentList '/S', '/D=C:\Program Files\Unity\Hub\Editor\6000.2.6f2' -Wait -NoNewWindow
+
+          Write-Host "--- IL2CPP Support ---"
+          Invoke-WebRequest -Uri $il2cppInstaller -OutFile "$tmp\il2cpp.exe" -UseBasicParsing
+          Start-Process -FilePath "$tmp\il2cpp.exe" -ArgumentList '/S' -Wait -NoNewWindow
+
+          Write-Host "=== Unity + IL2CPP installed ==="
+          & "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe" -version
+
+      - name: Cache Unity Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-baseline-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-baseline-
+
+      - name: Activate Unity License
+        shell: pwsh
+        run: |
+          $ulfPath = "$env:USERPROFILE\.local\share\unity3d\Unity\Unity_lic.ulf"
+          $ulfDir = Split-Path $ulfPath -Parent
+          New-Item -ItemType Directory -Path $ulfDir -Force | Out-Null
+          $env:UNITY_LICENSE | Out-File -FilePath $ulfPath -Encoding utf8 -NoNewline
+          Write-Host "License file written."
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Build (Baseline)
+        shell: pwsh
+        run: |
+          $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
+          $logFile = "$env:RUNNER_TEMP\unity_build.log"
+          $projectPath = "$env:GITHUB_WORKSPACE"
+
+          Write-Host "=== Starting baseline build ==="
+          & $unityExe -batchmode -nographics -logFile $logFile -projectPath $projectPath -executeMethod SPZCloudBuild.BuildBaseline -quit 2>&1
+
+          $exitCode = $LASTEXITCODE
+          Write-Host "Unity exit code: $exitCode"
+
+          # Always show last 100 lines of log
+          Write-Host "=== Last 100 lines of build log ==="
+          Get-Content $logFile -Tail 100 -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload Build Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-Baseline-${{ github.run_number }}
+          path: build/StableProjectorz-Baseline/
+          retention-days: 14
+
+      - name: Upload Build Log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-Baseline-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/unity_build.log
+            build/StableProjectorz-Baseline/build_errors.txt
+            build/StableProjectorz-Baseline/BUILD_MANIFEST.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Manifest (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-Baseline-manifest-${{ github.run_number }}
+          path: build/StableProjectorz-Baseline/BUILD_MANIFEST.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Compute SHA-256
+        if: success()
+        shell: pwsh
+        run: |
+          $buildDir = "build\StableProjectorz-Baseline"
+          $hashFile = "$buildDir\SHA256SUMS"
+          Get-ChildItem $buildDir -Recurse -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            $rel = $_.FullName.Substring((Resolve-Path $buildDir).Path.Length + 1)
+            "$hash  $rel" | Out-File -FilePath $hashFile -Append -Encoding utf8
+          }
+          Write-Host "=== SHA-256 Checksums ==="
+          Get-Content $hashFile
+
+  # ═════════════════════════════════════════════════════════════════
+  # Job 3: CN build (localization + CJK font + Agent Bridge)
+  # ═════════════════════════════════════════════════════════════════
+  build-cn:
+    name: CN Build (Windows x64 IL2CPP + CN + Bridge)
+    if: github.event.inputs.build_type == 'cn'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Check License Secret
+        shell: pwsh
+        run: |
+          if (-not $env:UNITY_LICENSE) {
+            Write-Host "ERROR: UNITY_LICENSE secret is not set."
+            exit 1
+          }
+          Write-Host "UNITY_LICENSE secret is present."
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Download CJK Font + Verify SHA-256
+        shell: pwsh
+        run: |
+          Write-Host "=== Downloading Source Han Sans CN ==="
+          $fontDir = "Assets\TextMesh Pro\Fonts"
+          New-Item -ItemType Directory -Path $fontDir -Force | Out-Null
+
+          $zipPath = "$env:RUNNER_TEMP\shs.zip"
+          Invoke-WebRequest -Uri $env:CJK_FONT_URL -OutFile $zipPath -UseBasicParsing
+
+          $extractDir = "$env:RUNNER_TEMP\shs_extracted"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+          # Find the Regular OTF in SubsetOTF/CN/
+          $otfFile = Get-ChildItem $extractDir -Recurse -Filter "SourceHanSansCN-Regular.otf" | Select-Object -First 1
+          if (-not $otfFile) {
+            Write-Host "ERROR: SourceHanSansCN-Regular.otf not found in archive"
+            exit 1
+          }
+
+          $destPath = "$fontDir\SourceHanSansCN-Regular.otf"
+          Copy-Item $otfFile.FullName $destPath -Force
+
+          # Verify SHA-256
+          $actualHash = (Get-FileHash $destPath -Algorithm SHA256).Hash
+          Write-Host "Expected: $env:CJK_FONT_SHA256"
+          Write-Host "Actual:   $actualHash"
+          if ($actualHash -ne $env:CJK_FONT_SHA256) {
+            Write-Host "ERROR: Font SHA-256 mismatch! Aborting."
+            exit 1
+          }
+          Write-Host "Font SHA-256 verified OK."
+          $fontSize = (Get-Item $destPath).Length
+          Write-Host "Font size: $([math]::Round($fontSize / 1MB, 1)) MB"
+
+          # Copy license file
+          $licFile = Get-ChildItem $extractDir -Recurse -Filter "LICENSE*" | Select-Object -First 1
+          if ($licFile) {
+            Copy-Item $licFile.FullName "$fontDir\SourceHanSans-LICENSE.txt" -Force
+            Write-Host "Font license copied."
+          }
+
+      - name: Install Unity Editor + IL2CPP Module
+        run: |
+          Write-Host "=== Downloading Unity $env:UNITY_VERSION ==="
+          $base = "https://download.unity3d.com/download_unity/$env:UNITY_CHANGESET"
+          $editorInstaller = "$base/Windows64EditorInstaller/UnitySetup64-$env:UNITY_VERSION.exe"
+          $il2cppInstaller = "$base/TargetSupportInstaller/UnitySetup-Windows-IL2CPP-Support-for-Editor-$env:UNITY_VERSION.exe"
+
+          $tmp = "$env:RUNNER_TEMP\unity_installers"
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+          Write-Host "--- Editor ---"
+          Invoke-WebRequest -Uri $editorInstaller -OutFile "$tmp\editor.exe" -UseBasicParsing
+          Start-Process -FilePath "$tmp\editor.exe" -ArgumentList '/S', '/D=C:\Program Files\Unity\Hub\Editor\6000.2.6f2' -Wait -NoNewWindow
+
+          Write-Host "--- IL2CPP Support ---"
+          Invoke-WebRequest -Uri $il2cppInstaller -OutFile "$tmp\il2cpp.exe" -UseBasicParsing
+          Start-Process -FilePath "$tmp\il2cpp.exe" -ArgumentList '/S' -Wait -NoNewWindow
+
+          Write-Host "=== Unity + IL2CPP installed ==="
+
+      - name: Cache Unity Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-cn-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-cn-
+            Library-baseline-
+
+      - name: Activate Unity License
+        shell: pwsh
+        run: |
+          $ulfPath = "$env:USERPROFILE\.local\share\unity3d\Unity\Unity_lic.ulf"
+          $ulfDir = Split-Path $ulfPath -Parent
+          New-Item -ItemType Directory -Path $ulfDir -Force | Out-Null
+          $env:UNITY_LICENSE | Out-File -FilePath $ulfPath -Encoding utf8 -NoNewline
+          Write-Host "License file written."
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
+      - name: Apply CN Localization
+        shell: pwsh
+        run: |
+          Write-Host "=== Applying CN localization ==="
+          & python tools/apply_cn_localization.py --translations tools/translations.json --repo .
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: CN localization apply failed!"
+            exit 1
+          }
+          Write-Host "=== Verifying CN localization ==="
+          & python tools/apply_cn_localization.py --translations tools/translations.json --repo . --verify
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: CN localization verify failed!"
+            exit 1
+          }
+
+      - name: Build (CN + Agent Bridge)
+        shell: pwsh
+        run: |
+          $unityExe = "C:\Program Files\Unity\Hub\Editor\6000.2.6f2\Editor\Unity.exe"
+          $logFile = "$env:RUNNER_TEMP\unity_build.log"
+          $projectPath = "$env:GITHUB_WORKSPACE"
+
+          Write-Host "=== Starting CN build ==="
+          & $unityExe -batchmode -nographics -logFile $logFile -projectPath $projectPath -executeMethod SPZCloudBuild.BuildCN -quit 2>&1
+
+          $exitCode = $LASTEXITCODE
+          Write-Host "Unity exit code: $exitCode"
+
+          Write-Host "=== Last 100 lines of build log ==="
+          Get-Content $logFile -Tail 100 -ErrorAction SilentlyContinue
+
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload Build Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-CN-${{ github.run_number }}
+          path: build/StableProjectorz-CN/
+          retention-days: 30
+
+      - name: Upload Build Log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-CN-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/unity_build.log
+            build/StableProjectorz-CN/build_errors.txt
+            build/StableProjectorz-CN/BUILD_MANIFEST.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload Manifest (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SPZ-CN-manifest-${{ github.run_number }}
+          path: build/StableProjectorz-CN/BUILD_MANIFEST.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Compute SHA-256
+        if: success()
+        shell: pwsh
+        run: |
+          $buildDir = "build\StableProjectorz-CN"
+          $hashFile = "$buildDir\SHA256SUMS"
+          Get-ChildItem $buildDir -Recurse -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            $rel = $_.FullName.Substring((Resolve-Path $buildDir).Path.Length + 1)
+            "$hash  $rel" | Out-File -FilePath $hashFile -Append -Encoding utf8
+          }
+          Write-Host "=== SHA-256 Checksums ==="
+          Get-Content $hashFile
+
+      - name: Build Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $manifestFile = "build\StableProjectorz-CN\BUILD_MANIFEST.txt"
+          Write-Host "========================================="
+          Write-Host " SPZ CN Build Summary"
+          Write-Host "========================================="
+          if (Test-Path $manifestFile) {
+            Get-Content $manifestFile
+          } else {
+            Write-Host " Manifest not found (build may have failed before manifest generation)"
+          }
+          Write-Host "========================================="
+          Write-Host " Job Status: ${{ job.status }}"
+          Write-Host "========================================="

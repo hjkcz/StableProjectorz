@@ -93,3 +93,9 @@ TestDownloadsIntoHere/
 # But don't ignore the directories inside InnoSetup
 !/InnoSetup/*/
 *.zip
+# CN localization backups
+_backup_before_cn/
+
+
+# Python cache
+__pycache__/
