@@ -1,4 +1,4 @@
-﻿name: Build SPZ Windows
+name: Build SPZ Windows
 
 # =====================================================================
 # Triggers:
@@ -73,13 +73,15 @@ jobs:
 
           Write-Host "=== Requesting activation file ==="
           $alfDir = Join-Path $env:RUNNER_TEMP "alf_gen"
+          New-Item -ItemType Directory -Path $alfDir -Force | Out-Null
+          Set-Location -Path $alfDir
+          Write-Host "ALF generation dir: $(Get-Location)"
 
           # Per Unity 6000 docs: ALF is written to CWD.
-          # Use -WorkingDirectory to control where ALF lands.
+          # We Set-Location to an empty temp dir so Unity doesn't load the project.
           # Docs do not use -nographics.
           $proc = Start-Process -FilePath $unityExe `
             -ArgumentList '-batchmode', '-createManualActivationFile', '-logFile', $logFile, '-quit' `
-            -WorkingDirectory $alfDir `
             -Wait -NoNewWindow -PassThru
           $exitCode = $proc.ExitCode
           Write-Host "Unity exit code: $exitCode"
@@ -89,8 +91,8 @@ jobs:
           Write-Host "=== Activation log (last 50 lines) ==="
           Get-Content $logFile -Tail 50 -ErrorAction SilentlyContinue
 
-          # ALF should be in GITHUB_WORKSPACE (CWD we set)
-          $alfFile = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
+          # ALF should be in alfDir (the CWD we set)
+          $alfFile = Get-ChildItem -Path $alfDir -Filter "*.alf" -ErrorAction SilentlyContinue | Select-Object -First 1
 
           if (-not $alfFile) {
             Write-Host "ALF not in CWD, searching fallback locations..."
