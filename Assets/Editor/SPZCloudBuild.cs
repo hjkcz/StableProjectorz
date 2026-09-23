@@ -95,6 +95,35 @@ public class SPZCloudBuild
 
         Directory.CreateDirectory(buildPath);
 
+        try
+        {
+            RunBuildCore(buildPath, buildLabel, enableCN, enableBridge);
+        }
+        catch (Exception e)
+        {
+            // Catch any uncaught exception to ensure manifest + error log are written
+            Debug.LogError($"[Build] FATAL: {e.GetType().Name}: {e.Message}");
+            Debug.LogError($"[Build] Stack trace:\n{e.StackTrace}");
+            ManifestAdd($"build_result: FATAL_EXCEPTION");
+            ManifestAdd($"exception_type: {e.GetType().Name}");
+            ManifestAdd($"exception_message: {e.Message}");
+
+            string errorLogPath = Path.Combine(buildPath, "build_errors.txt");
+            using (var w = new StreamWriter(errorLogPath))
+            {
+                w.WriteLine($"Fatal exception: {e.GetType().Name}");
+                w.WriteLine($"Message: {e.Message}");
+                w.WriteLine();
+                w.WriteLine("Stack Trace:");
+                w.WriteLine(e.StackTrace);
+            }
+            WriteManifest(buildPath, false);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    static void RunBuildCore(string buildPath, string buildLabel, bool enableCN, bool enableBridge)
+    {
         ManifestAdd($"build_label: {buildLabel}");
         ManifestAdd($"enable_cn: {enableCN}");
         ManifestAdd($"enable_agent_bridge: {enableBridge}");
@@ -173,9 +202,8 @@ public class SPZCloudBuild
             Debug.LogError($"[Build] FAILED — result: {summary.result}, errors: {summary.totalErrors}, warnings: {summary.totalWarnings}");
             ManifestAdd($"build_result: FAILED ({summary.result})");
             ManifestAdd($"build_errors: {summary.totalErrors}");
-            WriteManifest(buildPath, false);
 
-            // Also write the full error log for artifact upload
+            // Write full error log for artifact upload
             string errorLogPath = Path.Combine(buildPath, "build_errors.txt");
             using (var w = new StreamWriter(errorLogPath))
             {
@@ -191,6 +219,7 @@ public class SPZCloudBuild
                     }
                 }
             }
+            WriteManifest(buildPath, false);
             Debug.LogError($"[Build] Error log written to {errorLogPath}");
             EditorApplication.Exit(1);
         }
@@ -306,6 +335,8 @@ public class SPZCloudBuild
         Debug.Log($"[CJK] TMP font asset ready at {CJK_FONT_ASSET_PATH}");
 
         // ── Add to TMP Settings fallback list ──────────────────────
+        // Use SerializedObject to avoid API differences between TMP versions
+        // (instance field vs static property). SerializedProperty always works.
         var tmpSettings = AssetDatabase.LoadAssetAtPath<TMP_Settings>(TMP_SETTINGS_PATH);
         if (tmpSettings == null)
         {
@@ -314,56 +345,60 @@ public class SPZCloudBuild
             throw new Exception("TMP Settings.asset not found");
         }
 
-        // Use the correct API: TMP_Settings.fallbackFontAssets is static in Unity 6000.x
-        var fallbackList = TMP_Settings.fallbackFontAssets;
-        if (fallbackList == null)
+        var so = new SerializedObject(tmpSettings);
+        var fallbackProp = so.FindProperty("m_fallbackFontAssets");
+        if (fallbackProp == null)
         {
-            // Should not happen, but handle gracefully
-            fallbackList = new List<TMP_FontAsset>();
-            // Access via serialized property if direct assignment needed
-            Debug.LogWarning("[CJK] fallbackFontAssets was null, creating new list.");
+            Debug.LogError("[CJK] Could not find m_fallbackFontAssets on TMP_Settings! Aborting.");
+            throw new Exception("TMP_Settings.fallbackFontAssets property not found via serialization");
         }
 
-        // Check for duplicate by GUID
         string assetGUID = AssetDatabase.AssetPathToGUID(CJK_FONT_ASSET_PATH);
         bool alreadyExists = false;
-        for (int i = fallbackList.Count - 1; i >= 0; i--)
+        bool removedNulls = false;
+
+        for (int i = fallbackProp.arraySize - 1; i >= 0; i--)
         {
-            if (fallbackList[i] == null)
+            var elem = fallbackProp.GetArrayElementAtIndex(i);
+            if (elem.objectReferenceValue == null)
             {
                 Debug.LogWarning($"[CJK] Removing null entry at index {i}");
-                fallbackList.RemoveAt(i);
+                fallbackProp.DeleteArrayElementAtIndex(i);
+                removedNulls = true;
                 continue;
             }
-            string existingGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(fallbackList[i]));
+            string existingGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(elem.objectReferenceValue));
             if (existingGUID == assetGUID)
             {
                 alreadyExists = true;
                 Debug.Log($"[CJK] Font already in fallback list at index {i}, replacing...");
-                fallbackList[i] = fontAsset;
+                fallbackProp.GetArrayElementAtIndex(i).objectReferenceValue = fontAsset;
             }
         }
 
         if (!alreadyExists)
         {
-            fallbackList.Add(fontAsset);
+            int newIdx = fallbackProp.arraySize;
+            fallbackProp.InsertArrayElementAtIndex(newIdx);
+            fallbackProp.GetArrayElementAtIndex(newIdx).objectReferenceValue = fontAsset;
             Debug.Log("[CJK] Added CJK font to fallbackFontAssets list.");
         }
 
+        so.ApplyModifiedProperties();
         EditorUtility.SetDirty(tmpSettings);
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
 
-        // ── Verify: reload and check ───────────────────────────────
+        // ── Verify: reload via SerializedObject and check ─────────
         var reloadedSettings = AssetDatabase.LoadAssetAtPath<TMP_Settings>(TMP_SETTINGS_PATH);
-        int fallbackCount = TMP_Settings.fallbackFontAssets != null
-            ? TMP_Settings.fallbackFontAssets.Count
-            : 0;
+        var verifySO = new SerializedObject(reloadedSettings);
+        var verifyProp = verifySO.FindProperty("m_fallbackFontAssets");
+        int fallbackCount = verifyProp != null ? verifyProp.arraySize : 0;
         bool hasCJK = false;
         for (int i = 0; i < fallbackCount; i++)
         {
-            if (TMP_Settings.fallbackFontAssets[i] != null &&
-                TMP_Settings.fallbackFontAssets[i].name == "CJKFallback SDF")
+            var elem = verifyProp.GetArrayElementAtIndex(i);
+            if (elem.objectReferenceValue != null && elem.objectReferenceValue.name == "CJKFallback SDF")
             {
                 hasCJK = true;
                 break;
